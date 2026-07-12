@@ -1,0 +1,25 @@
+# sbt
+target/
+*.class
+*.jar
+*.log
+
+# IDE
+.idea/
+.vscode/
+*.iml
+.bsp/
+.metals/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Output PPTX (generated)
+src/main/resources/output/*.pptx
+
+# Test PDF (generated or copied)
+src/main/resources/source/input.pdf
+
+# Test content
+src/main/resources/source/test-content.html
