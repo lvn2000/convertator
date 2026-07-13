@@ -1,5 +1,8 @@
 # sbt
 target/
+project/project/
+project/target/
+project/metals.sbt
 *.class
 *.jar
 *.log
@@ -9,6 +12,7 @@ target/
 .vscode/
 *.iml
 .bsp/
+.bloop/
 .metals/
 
 # OS
