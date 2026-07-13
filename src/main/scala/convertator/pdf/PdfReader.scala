@@ -1,24 +1,27 @@
 package convertator.pdf
 
-import convertator.model.{PageContent, TextElement, TextLine}
+import convertator.model.{PageContent, PageImage, TextElement, TextLine}
 
+import org.apache.pdfbox.contentstream.operator.Operator
+import org.apache.pdfbox.cos.COSName
 import org.apache.pdfbox.pdmodel.PDDocument
+import org.apache.pdfbox.pdmodel.graphics.image.PDImageXObject
 import org.apache.pdfbox.text.{PDFTextStripper, TextPosition}
 
-import java.io.{File, InputStream}
+import java.io.{ByteArrayOutputStream, File, InputStream}
+import java.util.Base64
+import javax.imageio.ImageIO
 import scala.collection.mutable
 import scala.jdk.CollectionConverters.*
 
 /** Reads a PDF and extracts text elements with positioning per page. */
 object PdfReader:
 
-  /** Extract content from every page of a PDF file. */
   def read(input: File): Seq[PageContent] =
     val doc = PDDocument.load(input)
     try readDoc(doc)
     finally doc.close()
 
-  /** Extract content from every page of a PDF input stream. */
   def read(input: InputStream): Seq[PageContent] =
     val doc = PDDocument.load(input)
     try readDoc(doc)
@@ -30,35 +33,33 @@ object PdfReader:
       extractPage(doc, pageIdx)
     }
 
-  /** Extract one page at the given 0-based index. */
   private def extractPage(doc: PDDocument, pageIdx: Int): PageContent =
     val page  = doc.getPage(pageIdx)
     val media = page.getMediaBox
     val pageW = media.getWidth
     val pageH = media.getHeight
 
+    // 1. Extract text
     val stripper = new PositionAwareStripper
     stripper.setStartPage(pageIdx + 1)
     stripper.setEndPage(pageIdx + 1)
-    stripper.setSortByPosition(true) // left-to-right, top-to-bottom
-
-    // Suppress the extracted text string (we only care about positions)
+    stripper.setSortByPosition(true)
     val _ = stripper.getText(doc)
 
-    val raw = stripper.elements.toList
-
-    // Group elements into lines by their Y coordinate (allow ~3pt tolerance)
-    val grouped: List[List[TextElement]] =
-      groupByY(raw, tolerance = 3.0f)
-
-    val lines = grouped.map { elems =>
+    val raw   = stripper.elements.toList
+    val groups = groupByY(raw, tolerance = 3.0f)
+    val lines = groups.map { elems =>
       val maxFs = elems.map(_.fontSize).max
-      // The representative Y is the average (or first element's Y)
       val avgY  = elems.map(_.y).sum / elems.length
       TextLine(elems, avgY, maxFs)
     }
 
-    PageContent(lines, pageW, pageH)
+    // 2. Extract images
+    val imgExtractor = new ImageExtractor
+    imgExtractor.processPage(page)
+    val images = imgExtractor.images.toList
+
+    PageContent(lines, pageW, pageH, images)
 
   // ---- helpers -----------------------------------------------------------
 
@@ -69,7 +70,6 @@ object PdfReader:
       val groups = mutable.ListBuffer.empty[List[TextElement]]
       var current = mutable.ListBuffer(sorted.head)
       for e <- sorted.tail do
-        // same line if y difference is within tolerance
         if math.abs(e.y - current.head.y) <= tolerance then
           current += e
         else
@@ -83,31 +83,58 @@ object PdfReader:
   private class PositionAwareStripper extends PDFTextStripper:
     val elements = mutable.ListBuffer.empty[TextElement]
 
-    // Called by PDFBox for each text-position (word / fragment)
     override def writeString(text: String, textPositions: java.util.List[TextPosition]): Unit =
       for tp <- textPositions.asScala do
         val txt = tp.getUnicode
         if txt != null && txt.nonEmpty then
           val fontName = Option(tp.getFont).map(_.getName).getOrElse("Unknown")
           elements += TextElement(
-            text     = txt,
-            x        = tp.getXDirAdj,
-            y        = tp.getYDirAdj,
-            fontSize = tp.getFontSizeInPt,
-            fontName = fontName,
-            width    = tp.getWidth,
-            bold     = isBold(fontName),
-            italic   = isItalic(fontName),
-            underline = false // PDF underline detection is unreliable this way
+            text      = txt,
+            x         = tp.getXDirAdj,
+            y         = tp.getYDirAdj,
+            fontSize  = tp.getFontSizeInPt,
+            fontName  = fontName,
+            width     = tp.getWidth,
+            bold      = isBold(fontName),
+            italic    = isItalic(fontName),
+            underline = false
           )
 
     private def isBold(name: String): Boolean =
       val upper = name.toUpperCase
       upper.contains("BOLD") || upper.contains("DEMI") || upper.contains("HEAVY")
-
     private def isItalic(name: String): Boolean =
       val upper = name.toUpperCase
       upper.contains("ITALIC") || upper.contains("OBLIQUE") || upper.contains("KURSIV")
   end PositionAwareStripper
+
+  // ---- image extractor ---------------------------------------------------
+
+  /** Extracts images from a PDF page by scanning the page resources. */
+  private class ImageExtractor:
+    val images = mutable.ListBuffer.empty[PageImage]
+
+    def processPage(page: org.apache.pdfbox.pdmodel.PDPage): Unit =
+      try
+        val resources = page.getResources
+        if resources != null then
+          for name <- resources.getXObjectNames.asScala do
+            try
+              resources.getXObject(name) match
+                case img: PDImageXObject =>
+                  val baos = new ByteArrayOutputStream()
+                  ImageIO.write(img.getImage, "png", baos)
+                  images += PageImage(
+                    data        = baos.toByteArray,
+                    contentType = "image/png",
+                    x           = 0f,
+                    y           = 0f,
+                    width       = img.getWidth.toFloat,
+                    height      = img.getHeight.toFloat
+                  )
+                case _ => ()
+            catch case _: Exception => ()
+      catch case _: Exception => ()
+  end ImageExtractor
 
 end PdfReader
