@@ -22,32 +22,35 @@ object Main:
           s"""Convertator — PDF → PPTX Converter
              |
              |Usage:
-             |  convertator [options]                Batch: process all PDFs from $SourceDir
+             |  convertator [options]                Batch: process all PDFs/DOCX from $SourceDir
              |  convertator --batch [options]         Same as above (explicit)
-             |  convertator <input.pdf> <output.pptx> [options]
+             |  convertator <input.pdf|docx> <output.pptx> [options]
              |
              |Options:
              |  --help               Show this help
              |  --mode         <mode>    Page mode: "flow" (default) or "fit"
+             |  --font-size    <pts>    Target body text size in pt (default: 18)
+             |  --font-scale   <num>     Font-size scaling ratio     (default: auto from --font-size)
              |  --slide-width  <pts>     Slide width in points  (default: 720  = 10")
              |  --slide-height <pts>     Slide height in points (default: 540  = 7.5")
              |  --margin-x     <pts>     Horizontal margin      (default: 48)
              |  --margin-y     <pts>     Vertical margin        (default: 48)
              |  --line-spacing <pts>     Extra gap between lines (default: 4)
-             |  --font-scale   <num>     Font-size scaling ratio     (default: auto from --font-size)
-             |  --font-size    <pts>    Target body text size in pt (default: 18)
              |
              |Modes:
              |  flow  – Keep natural font sizes, overflow across multiple slides (default)
              |  fit   – Scale each PDF page to fit on one slide (1:1 mapping)
              |
+             |Supported formats: .pdf, .docx
+             |
              |Examples:
-             |  # Batch (default when no args given): place PDFs in $SourceDir, get PPTXs in $OutputDir
+             |  # Batch (default when no args given): place files in $SourceDir, get PPTXs in $OutputDir
              |  convertator
              |  convertator --mode flow
              |
              |  # Single file
              |  convertator mydoc.pdf mydoc.pptx
+             |  convertator mydoc.docx mydoc.pptx
              |""".stripMargin)
         if modeArgs == Nil then runBatch(userCfg) else sys.exit(1)
 
@@ -72,25 +75,30 @@ object Main:
     val outDir = new File(OutputDir)
     outDir.mkdirs()
 
-    val pdfFiles = srcDir.listFiles().filter(f => f.isFile && f.getName.toLowerCase.endsWith(".pdf")).toSeq
+    val inputFiles = srcDir.listFiles().filter { f =>
+      f.isFile && {
+        val name = f.getName.toLowerCase
+        name.endsWith(".pdf") || name.endsWith(".docx")
+      }
+    }.toSeq
 
-    if pdfFiles.isEmpty then
-      println(s"ℹ  No PDF files found in $SourceDir")
+    if inputFiles.isEmpty then
+      println(s"ℹ  No PDF or DOCX files found in $SourceDir")
       return
 
-    println(s"📂 Found ${pdfFiles.length} PDF file(s) in $SourceDir")
+    println(s"📂 Found ${inputFiles.length} file(s) in $SourceDir")
     println()
 
     var success = 0
     var failed  = 0
 
-    for pdfFile <- pdfFiles.sortBy(_.getName) do
-      val pptxName = pdfFile.getName.replaceAll("\\.pdf$", ".pptx")
+    for inputFile <- inputFiles.sortBy(_.getName) do
+      val pptxName = inputFile.getName.replaceAll("\\.(pdf|docx)$", ".pptx")
       val pptxFile = new File(outDir, pptxName)
 
-      print(s"  🔄 ${pdfFile.getName} → $OutputDir/$pptxName ... ")
+      print(s"  🔄 ${inputFile.getName} → $OutputDir/$pptxName ... ")
       try
-        Converter.run(pdfFile.getAbsolutePath, pptxFile.getAbsolutePath, cfg)
+        Converter.run(inputFile.getAbsolutePath, pptxFile.getAbsolutePath, cfg)
         println("✅")
         success += 1
       catch
