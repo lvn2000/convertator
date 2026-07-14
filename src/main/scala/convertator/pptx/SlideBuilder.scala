@@ -31,100 +31,12 @@ object SlideBuilder:
     try convert(pages, config, fos)
     finally fos.close()
 
-  // ---- given instances ----------------------------------------------------
+  // ---- Slide placers moved to convertator.pptx.SlidePlacers -----------------
+  // Given instances for SlidePlacer were extracted to SlidePlacers.scala to
+  // keep rendering logic focused. See convertator.pptx.SlidePlacers for the
+  // implementations.
 
-  private given SlidePlacer[TextLine] with
-    def height(line: TextLine, ctx: PlaceContext): Double =
-      val fs = line.maxFontSize * ctx.fontScale
-      val avgCharW = (fs * 0.65).max(1.0)
-      val chPerLine = (ctx.availW / avgCharW).toInt.max(1)
-      val approxSpaces = line.elements.length
-      val totalChars = line.elements.map(_.text.length).sum + approxSpaces
-      val visLines = math.ceil(totalChars.toDouble / chPerLine).toInt.max(1)
-      visLines * (fs * 1.2) + ctx.cfg.lineSpacing
 
-    def place(line: TextLine, slide: XSLFSlide, ppt: XMLSlideShow,
-              ctx: PlaceContext, curY: Double, tb: XSLFTextBox): XSLFTextBox =
-      addLineAsParagraph(tb, line, ctx.cfg, ctx.posScale, ctx.fontScale)
-      tb
-
-    def trySplit(line: TextLine, ctx: PlaceContext, curY: Double): Option[(TextLine, Option[TextLine])] =
-      val fs = line.maxFontSize * ctx.fontScale
-      val avgCharW = (fs * 0.65).max(1.0)
-      val chPerLine = (ctx.availW / avgCharW).toInt.max(1)
-      val spaceLeft = ctx.usableH - curY
-      val linesThatFit = (spaceLeft / (fs * 1.2)).toInt.max(1)
-      val charsThatFit = linesThatFit * chPerLine
-      val (fitElems, remainElems) = splitElements(line.elements, charsThatFit)
-      if fitElems.isEmpty then None
-      else
-        val portion = TextLine(fitElems, line.y, line.maxFontSize)
-        val remainder = if remainElems.nonEmpty then Some(TextLine(remainElems, line.y, line.maxFontSize)) else None
-        Some((portion, remainder))
-
-  private given SlidePlacer[PageImage] with
-    def height(img: PageImage, ctx: PlaceContext): Double =
-      var iw = img.width.toDouble * ctx.posScale
-      var ih = img.height.toDouble * ctx.posScale
-      if iw > ctx.availW then
-        val s = ctx.availW / iw; ih = ih * s
-      if ih > ctx.maxImgH then
-        val s = ctx.maxImgH / ih; ih = ctx.maxImgH
-      ih
-
-    def place(img: PageImage, slide: XSLFSlide, ppt: XMLSlideShow,
-              ctx: PlaceContext, curY: Double, tb: XSLFTextBox): XSLFTextBox =
-      var iw = img.width.toDouble * ctx.posScale
-      var ih = img.height.toDouble * ctx.posScale
-      if iw > ctx.availW then
-        val s = ctx.availW / iw; iw = ctx.availW; ih = ih * s
-      if ih > ctx.maxImgH then
-        val s = ctx.maxImgH / ih; ih = ctx.maxImgH; iw = iw * s
-      try
-        val pt = mimeToPictureType(img.contentType)
-        val pd = ppt.addPicture(img.data, pt)
-        slide.createPicture(pd).setAnchor(new Rectangle2D.Double(
-          ctx.cfg.marginX + (ctx.availW - iw) / 2, ctx.cfg.marginY + curY, iw, ih))
-      catch case e: Exception => Console.err.println(s"  \u26a0 Image: ${e.getMessage}")
-      tb
-
-    def trySplit(img: PageImage, ctx: PlaceContext, curY: Double): None.type = None
-
-  private given SlidePlacer[PageTable] with
-    def height(tbl: PageTable, ctx: PlaceContext): Double =
-      val tw = tbl.columnWidths.sum.toDouble
-      val scaleW = if tw > ctx.availW then ctx.availW / tw else 1.0
-      tbl.rows.map(r => r.height.toDouble * scaleW).sum
-
-    def place(tbl: PageTable, slide: XSLFSlide, ppt: XMLSlideShow,
-              ctx: PlaceContext, curY: Double, tb: XSLFTextBox): XSLFTextBox =
-      val tw = tbl.columnWidths.sum.toDouble
-      val scaleW = if tw > ctx.availW then ctx.availW / tw else 1.0
-      try
-        drawTable(slide, tbl, ctx.cfg, ctx.availW, scaleW, curY, 0, tbl.rows.length)
-      catch case e: Exception => Console.err.println(s"  \u26a0 Table: ${e.getMessage}")
-      tb
-
-    def trySplit(tbl: PageTable, ctx: PlaceContext, curY: Double): Option[(PageTable, Option[PageTable])] =
-      val tw = tbl.columnWidths.sum.toDouble
-      val scaleW = if tw > ctx.availW then ctx.availW / tw else 1.0
-      val scaledHeights = tbl.rows.map(r => r.height.toDouble * scaleW)
-      val spaceLeft = ctx.usableH - curY
-      var accH = 0.0
-      var splitIdx = 0
-      while splitIdx < scaledHeights.length && accH + scaledHeights(splitIdx) <= spaceLeft do
-        accH += scaledHeights(splitIdx)
-        splitIdx += 1
-      if splitIdx == 0 then None  // even one row doesn't fit — overflow
-      else
-        val portion = PageTable(tbl.y, tbl.columnWidths, tbl.rows.take(splitIdx))
-        val remainder =
-          if splitIdx < tbl.rows.length then
-            Some(PageTable(tbl.y, tbl.columnWidths, tbl.rows.drop(splitIdx)))
-          else None
-        Some((portion, remainder))
-
-  // ---- rendering ---------------------------------------------------------
 
   private val MaxImgH = 0.35
 
@@ -159,56 +71,31 @@ object SlideBuilder:
     val maxImgH      = usableH * MaxImgH
     val ctx          = PlaceContext(cfg, availW, usableH, fontScale, posScale, maxImgH)
 
-    // Build sorted list of content items using the Positioned type class
-    val items = ListBuffer.empty[TextLine | PageImage | PageTable]
-    items.addAll(lines)
-    items.addAll(images)
-    items.addAll(tables)
-    // Sort using explicit pattern matching to avoid Ordering ambiguity on union types
-    def sortKey(c: TextLine | PageImage | PageTable): (Float, Int) =
-      c match
-        case l: TextLine  => (if l.y < 0f then Float.MaxValue else l.y, 1)
-        case i: PageImage => (if i.y < 0f then Float.MaxValue else i.y, 0)
-        case t: PageTable => (if t.y < 0f then Float.MaxValue else t.y, 0)
-    items.sortBy(sortKey)
+    // Build sorted list of content items using the PageItem ADT and Positioned
+    val buf = scala.collection.mutable.ArrayBuffer.empty[convertator.model.PageItem]
+    buf.addAll(lines.map(convertator.model.PageItem.TextLineItem))
+    buf.addAll(images.map(convertator.model.PageItem.ImageItem))
+    buf.addAll(tables.map(convertator.model.PageItem.TableItem))
 
-    while items.nonEmpty do
+    def sortKey(pi: convertator.model.PageItem): (Float, Int) =
+      val pos = summon[convertator.model.Positioned[convertator.model.PageItem]]
+      val y = pos.y(pi)
+      val ord = pos.imgOrder(pi)
+      (if y < 0f then Float.MaxValue else y, ord)
+
+    // Sort in-place
+    buf.sortInPlaceBy(sortKey)
+
+    while buf.nonEmpty do
       val slide = newSlide(ppt)
       var tb: XSLFTextBox = null  // created lazily when first text item is reached
       var curY  = 0.0
       var idx   = 0
       var overflow = false
 
-      // Shared logic for images and tables
-      def processNonText[A <: (PageImage | PageTable)](a: A, placer: SlidePlacer[A],
-        slide: XSLFSlide, ppt: XMLSlideShow, ctx: PlaceContext
-      ): Unit =
-        val h = placer.height(a, ctx)
-        val fits = curY + h <= ctx.usableH
-        if tb == null then
-          if fits then
-            placer.place(a, slide, ppt, ctx, curY, tb)
-            curY += h; idx += 1
-          else if idx == 0 then
-            placer.trySplit(a, ctx, curY) match
-              case Some((portion, remainder)) =>
-                val ph = placer.height(portion, ctx)
-                placer.place(portion, slide, ppt, ctx, curY, tb)
-                curY += ph
-                remainder match
-                  case Some(rem) => items.update(idx, rem)
-                  case None      => idx += 1
-              case None =>
-                overflow = true; overflowTotal.incrementAndGet()
-          else
-            overflow = true; overflowTotal.incrementAndGet()
-        else
-          overflow = true
-          overflowTotal.incrementAndGet()
-
-      while idx < items.length && !overflow do
-        items(idx) match
-          case line: TextLine =>
+      while idx < buf.length && !overflow do
+        buf(idx) match
+          case convertator.model.PageItem.TextLineItem(line) =>
             val placer = summon[SlidePlacer[TextLine]]
             val h = placer.height(line, ctx)
             val fits = curY + h <= ctx.usableH
@@ -228,20 +115,62 @@ object SlideBuilder:
                   summon[SlidePlacer[TextLine]].place(portion, slide, ppt, ctx, curY, tb)
                   curY += ph
                   remainder match
-                    case Some(rem) => items.update(idx, rem)
+                    case Some(rem) => buf.update(idx, convertator.model.PageItem.TextLineItem(rem))
                     case None      => idx += 1
                 case None =>
                   overflow = true; overflowTotal.incrementAndGet()
             else
               overflow = true; overflowTotal.incrementAndGet()
 
-          case img: PageImage =>
-            processNonText(img, summon[SlidePlacer[PageImage]], slide, ppt, ctx)
+          case convertator.model.PageItem.ImageItem(img) =>
+            val placer = summon[SlidePlacer[PageImage]]
+            val h = placer.height(img, ctx)
+            val fits = curY + h <= ctx.usableH
+            if tb == null then
+              if fits then
+                placer.place(img, slide, ppt, ctx, curY, tb)
+                curY += h; idx += 1
+              else if idx == 0 then
+                placer.trySplit(img, ctx, curY) match
+                  case Some((portion, remainder)) =>
+                    val ph = placer.height(portion, ctx)
+                    placer.place(portion, slide, ppt, ctx, curY, tb)
+                    curY += ph
+                    remainder match
+                      case Some(rem) => buf.update(idx, convertator.model.PageItem.ImageItem(rem))
+                      case None      => idx += 1
+                  case None =>
+                    overflow = true; overflowTotal.incrementAndGet()
+              else
+                overflow = true; overflowTotal.incrementAndGet()
+            else
+              overflow = true; overflowTotal.incrementAndGet()
 
-          case tbl: PageTable =>
-            processNonText(tbl, summon[SlidePlacer[PageTable]], slide, ppt, ctx)
+          case convertator.model.PageItem.TableItem(tbl) =>
+            val placer = summon[SlidePlacer[PageTable]]
+            val h = placer.height(tbl, ctx)
+            val fits = curY + h <= ctx.usableH
+            if tb == null then
+              if fits then
+                placer.place(tbl, slide, ppt, ctx, curY, tb)
+                curY += h; idx += 1
+              else if idx == 0 then
+                placer.trySplit(tbl, ctx, curY) match
+                  case Some((portion, remainder)) =>
+                    val ph = placer.height(portion, ctx)
+                    placer.place(portion, slide, ppt, ctx, curY, tb)
+                    curY += ph
+                    remainder match
+                      case Some(rem) => buf.update(idx, convertator.model.PageItem.TableItem(rem))
+                      case None      => idx += 1
+                  case None =>
+                    overflow = true; overflowTotal.incrementAndGet()
+              else
+                overflow = true; overflowTotal.incrementAndGet()
+            else
+              overflow = true; overflowTotal.incrementAndGet()
 
-      items.remove(0, idx)
+      buf.remove(0, idx)
 
   // ---- helpers ------------------------------------------------------------
 
@@ -281,7 +210,7 @@ object SlideBuilder:
     tb
 
   /** Render rows [startRow, endRow) of a PageTable as an XSLFTable on the slide. */
-  private def drawTable(
+  def drawTable(
     slide: XSLFSlide, tbl: PageTable, cfg: ConversionConfig,
     availW: Double, scaleW: Double, curY: Double,
     startRow: Int, endRow: Int
@@ -381,7 +310,7 @@ object SlideBuilder:
       result += ((sb.toString(), rep)); i = j
     result.result()
 
-  private def addLineAsParagraph(
+  def addLineAsParagraph(
     tb: XSLFTextBox, line: TextLine, cfg: ConversionConfig,
     posScale: Float, fontScale: Float
   ): Unit =

@@ -8,7 +8,9 @@ import java.io.{File, FileInputStream, InputStream}
 import scala.jdk.CollectionConverters.*
 import scala.collection.mutable.ListBuffer
 
-object WordReader:
+import convertator.readers.DocumentReader
+
+object WordReader extends DocumentReader:
 
   private val PageWidth: Float  = 595.28f
   private val PageHeight: Float = 841.89f

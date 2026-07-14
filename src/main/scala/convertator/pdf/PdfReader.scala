@@ -15,7 +15,9 @@ import scala.collection.mutable
 import scala.jdk.CollectionConverters.*
 
 /** Reads a PDF and extracts text elements with positioning per page. */
-object PdfReader:
+import convertator.readers.DocumentReader
+
+object PdfReader extends DocumentReader:
 
   def read(input: File): Seq[PageContent] =
     val doc = PDDocument.load(input)
