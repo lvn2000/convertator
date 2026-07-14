@@ -111,8 +111,10 @@ object SlideBuilder:
               if tb == null then
                 val gap = if curY > 0 then 14.0 else 0.0
                 tb = newTextBox(slide, ctx.cfg, ctx.availW, ctx.usableH - curY - gap, curY + gap)
-              placer.trySplit(line, ctx, curY) match
-                case Some((portion: TextLine, remainder: Option[TextLine])) =>
+              val splitRes: Option[(TextLine, Option[TextLine])] = placer.trySplit(line, ctx, curY)
+              splitRes match
+                case Some(t) =>
+                  val (portion, remainder) = t
                   val ph = summon[SlidePlacer[TextLine]].height(portion, ctx)
                   summon[SlidePlacer[TextLine]].place(portion, slide, ppt, ctx, curY, tb)
                   curY += ph
@@ -120,9 +122,11 @@ object SlideBuilder:
                     case Some(rem) => buf.update(idx, convertator.model.PageItem.TextLineItem(rem))
                     case None      => idx += 1
                 case None =>
-                  overflow = true; overflowTotal.incrementAndGet()
+                  overflow = true
+                  overflowTotal.incrementAndGet()
             else
-              overflow = true; overflowTotal.incrementAndGet()
+              overflow = true
+              overflowTotal.incrementAndGet()
 
           case convertator.model.PageItem.ImageItem(img) =>
             val placer = summon[SlidePlacer[PageImage]]
@@ -133,16 +137,18 @@ object SlideBuilder:
                 placer.place(img, slide, ppt, ctx, curY, tb)
                 curY += h; idx += 1
               else if idx == 0 then
-                placer.trySplit(img, ctx, curY) match
-                  case Some((portion: PageImage, remainder: Option[PageImage])) =>
-                    val ph = placer.height(portion, ctx)
-                    placer.place(portion, slide, ppt, ctx, curY, tb)
-                    curY += ph
-                    remainder match
-                      case Some(rem) => buf.update(idx, convertator.model.PageItem.ImageItem(rem))
-                      case None      => idx += 1
-                  case None =>
-                    overflow = true; overflowTotal.incrementAndGet()
+                  val splitImg: Option[(PageImage, Option[PageImage])] = placer.trySplit(img, ctx, curY)
+                  splitImg match
+                    case Some(t) =>
+                      val (portion, remainder) = t
+                      val ph = placer.height(portion, ctx)
+                      placer.place(portion, slide, ppt, ctx, curY, tb)
+                      curY += ph
+                      remainder match
+                        case Some(rem) => buf.update(idx, convertator.model.PageItem.ImageItem(rem))
+                        case None      => idx += 1
+                    case None =>
+                      overflow = true; overflowTotal.incrementAndGet()
               else
                 overflow = true; overflowTotal.incrementAndGet()
             else
@@ -157,16 +163,18 @@ object SlideBuilder:
                 placer.place(tbl, slide, ppt, ctx, curY, tb)
                 curY += h; idx += 1
               else if idx == 0 then
-                placer.trySplit(tbl, ctx, curY) match
-                  case Some((portion: PageTable, remainder: Option[PageTable])) =>
-                    val ph = placer.height(portion, ctx)
-                    placer.place(portion, slide, ppt, ctx, curY, tb)
-                    curY += ph
-                    remainder match
-                      case Some(rem) => buf.update(idx, convertator.model.PageItem.TableItem(rem))
-                      case None      => idx += 1
-                  case None =>
-                    overflow = true; overflowTotal.incrementAndGet()
+                  val splitTbl: Option[(PageTable, Option[PageTable])] = placer.trySplit(tbl, ctx, curY)
+                  splitTbl match
+                    case Some(t) =>
+                      val (portion, remainder) = t
+                      val ph = placer.height(portion, ctx)
+                      placer.place(portion, slide, ppt, ctx, curY, tb)
+                      curY += ph
+                      remainder match
+                        case Some(rem) => buf.update(idx, convertator.model.PageItem.TableItem(rem))
+                        case None      => idx += 1
+                    case None =>
+                      overflow = true; overflowTotal.incrementAndGet()
               else
                 overflow = true; overflowTotal.incrementAndGet()
             else
