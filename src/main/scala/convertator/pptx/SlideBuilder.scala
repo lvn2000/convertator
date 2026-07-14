@@ -22,7 +22,7 @@ object SlideBuilder:
       for page <- pages do renderPage(ppt, page, config, overflowTotal)
       val total = overflowTotal.get()
       if total > 0 then
-        println(s"  ℹ  Content split across $total additional slide(s)")
+        println(s"  \u2139  Content split across $total additional slide(s)")
       ppt.write(output)
     finally ppt.close()
 
@@ -30,6 +30,103 @@ object SlideBuilder:
     val fos = new FileOutputStream(outputPath)
     try convert(pages, config, fos)
     finally fos.close()
+
+  // ---- given instances ----------------------------------------------------
+
+  private given SlidePlacer[TextLine] with
+    def height(line: TextLine, ctx: PlaceContext): Double =
+      val fs = line.maxFontSize * ctx.fontScale
+      val avgCharW = (fs * 0.65).max(1.0)
+      val chPerLine = (ctx.availW / avgCharW).toInt.max(1)
+      val approxSpaces = line.elements.length
+      val totalChars = line.elements.map(_.text.length).sum + approxSpaces
+      val visLines = math.ceil(totalChars.toDouble / chPerLine).toInt.max(1)
+      visLines * (fs * 1.2) + ctx.cfg.lineSpacing
+
+    def place(line: TextLine, slide: XSLFSlide, ppt: XMLSlideShow,
+              ctx: PlaceContext, curY: Double, tb: XSLFTextBox): XSLFTextBox =
+      addLineAsParagraph(tb, line, ctx.cfg, ctx.posScale, ctx.fontScale)
+      tb
+
+    def trySplit(line: TextLine, ctx: PlaceContext, curY: Double): Option[(TextLine, Option[TextLine])] =
+      val fs = line.maxFontSize * ctx.fontScale
+      val avgCharW = (fs * 0.65).max(1.0)
+      val chPerLine = (ctx.availW / avgCharW).toInt.max(1)
+      val spaceLeft = ctx.usableH - curY
+      val linesThatFit = (spaceLeft / (fs * 1.2)).toInt.max(1)
+      val charsThatFit = linesThatFit * chPerLine
+      val (fitElems, remainElems) = splitElements(line.elements, charsThatFit)
+      if fitElems.isEmpty then None
+      else
+        val portion = TextLine(fitElems, line.y, line.maxFontSize)
+        val remainder = if remainElems.nonEmpty then Some(TextLine(remainElems, line.y, line.maxFontSize)) else None
+        Some((portion, remainder))
+
+  private given SlidePlacer[PageImage] with
+    def height(img: PageImage, ctx: PlaceContext): Double =
+      var iw = img.width.toDouble * ctx.posScale
+      var ih = img.height.toDouble * ctx.posScale
+      if iw > ctx.availW then
+        val s = ctx.availW / iw; ih = ih * s
+      if ih > ctx.maxImgH then
+        val s = ctx.maxImgH / ih; ih = ctx.maxImgH
+      ih
+
+    def place(img: PageImage, slide: XSLFSlide, ppt: XMLSlideShow,
+              ctx: PlaceContext, curY: Double, tb: XSLFTextBox): XSLFTextBox =
+      var iw = img.width.toDouble * ctx.posScale
+      var ih = img.height.toDouble * ctx.posScale
+      if iw > ctx.availW then
+        val s = ctx.availW / iw; iw = ctx.availW; ih = ih * s
+      if ih > ctx.maxImgH then
+        val s = ctx.maxImgH / ih; ih = ctx.maxImgH; iw = iw * s
+      try
+        val pt = mimeToPictureType(img.contentType)
+        val pd = ppt.addPicture(img.data, pt)
+        slide.createPicture(pd).setAnchor(new Rectangle2D.Double(
+          ctx.cfg.marginX + (ctx.availW - iw) / 2, ctx.cfg.marginY + curY, iw, ih))
+      catch case e: Exception => Console.err.println(s"  \u26a0 Image: ${e.getMessage}")
+      tb
+
+    def trySplit(img: PageImage, ctx: PlaceContext, curY: Double): None.type = None
+
+  private given SlidePlacer[PageTable] with
+    def height(tbl: PageTable, ctx: PlaceContext): Double =
+      val tw = tbl.columnWidths.sum.toDouble
+      val scaleW = if tw > ctx.availW then ctx.availW / tw else 1.0
+      tbl.rows.map(r => r.height.toDouble * scaleW).sum
+
+    def place(tbl: PageTable, slide: XSLFSlide, ppt: XMLSlideShow,
+              ctx: PlaceContext, curY: Double, tb: XSLFTextBox): XSLFTextBox =
+      val tw = tbl.columnWidths.sum.toDouble
+      val scaleW = if tw > ctx.availW then ctx.availW / tw else 1.0
+      try
+        drawTable(slide, tbl, ctx.cfg, ctx.availW, scaleW, curY, 0, tbl.rows.length)
+      catch case e: Exception => Console.err.println(s"  \u26a0 Table: ${e.getMessage}")
+      tb
+
+    def trySplit(tbl: PageTable, ctx: PlaceContext, curY: Double): Option[(PageTable, Option[PageTable])] =
+      val tw = tbl.columnWidths.sum.toDouble
+      val scaleW = if tw > ctx.availW then ctx.availW / tw else 1.0
+      val scaledHeights = tbl.rows.map(r => r.height.toDouble * scaleW)
+      val spaceLeft = ctx.usableH - curY
+      var accH = 0.0
+      var splitIdx = 0
+      while splitIdx < scaledHeights.length && accH + scaledHeights(splitIdx) <= spaceLeft do
+        accH += scaledHeights(splitIdx)
+        splitIdx += 1
+      if splitIdx == 0 then None  // even one row doesn't fit — overflow
+      else
+        val portion = PageTable(tbl.y, tbl.columnWidths, tbl.rows.take(splitIdx))
+        val remainder =
+          if splitIdx < tbl.rows.length then
+            Some(PageTable(tbl.y, tbl.columnWidths, tbl.rows.drop(splitIdx)))
+          else None
+        Some((portion, remainder))
+
+  // ---- rendering ---------------------------------------------------------
+
+  private val MaxImgH = 0.35
 
   private def renderPage(
     ppt: XMLSlideShow, page: PageContent, cfg: ConversionConfig,
@@ -49,20 +146,6 @@ object SlideBuilder:
 
     buildSlides(ppt, page.lines, page.images, page.tables, cfg, posScale, fontScale, availW, availH, overflowTotal)
 
-  // ---- content item --------------------------------------------------------
-
-  private sealed trait ContentItem:
-    def y: Float
-    def imgOrder: Int  // 0=text, 1=image
-  private case class T(line: TextLine) extends ContentItem:
-    val y = line.y; val imgOrder = 1
-  private case class I(img: PageImage) extends ContentItem:
-    val y = img.y; val imgOrder = 0
-  private case class Tbl(tbl: PageTable) extends ContentItem:
-    val y = tbl.y; val imgOrder = 0
-
-  private val MaxImgH = 0.35
-
   // ---- slide building -----------------------------------------------------
 
   private def buildSlides(
@@ -74,11 +157,20 @@ object SlideBuilder:
     val safetyMargin = 40.0
     val usableH      = availH - safetyMargin
     val maxImgH      = usableH * MaxImgH
+    val ctx          = PlaceContext(cfg, availW, usableH, fontScale, posScale, maxImgH)
 
-    val items = ListBuffer.from(
-      (lines.map(T(_)) ++ images.map(I(_)) ++ tables.map(Tbl(_)))
-        .sortBy(c => (if c.y < 0f then Float.MaxValue else c.y, c.imgOrder))
-    )
+    // Build sorted list of content items using the Positioned type class
+    val items = ListBuffer.empty[TextLine | PageImage | PageTable]
+    items.addAll(lines)
+    items.addAll(images)
+    items.addAll(tables)
+    // Sort using explicit pattern matching to avoid Ordering ambiguity on union types
+    def sortKey(c: TextLine | PageImage | PageTable): (Float, Int) =
+      c match
+        case l: TextLine  => (if l.y < 0f then Float.MaxValue else l.y, 1)
+        case i: PageImage => (if i.y < 0f then Float.MaxValue else i.y, 0)
+        case t: PageTable => (if t.y < 0f then Float.MaxValue else t.y, 0)
+    items.sortBy(sortKey)
 
     while items.nonEmpty do
       val slide = newSlide(ppt)
@@ -87,129 +179,67 @@ object SlideBuilder:
       var idx   = 0
       var overflow = false
 
+      // Shared logic for images and tables
+      def processNonText[A <: (PageImage | PageTable)](a: A, placer: SlidePlacer[A],
+        slide: XSLFSlide, ppt: XMLSlideShow, ctx: PlaceContext
+      ): Unit =
+        val h = placer.height(a, ctx)
+        val fits = curY + h <= ctx.usableH
+        if tb == null then
+          if fits then
+            placer.place(a, slide, ppt, ctx, curY, tb)
+            curY += h; idx += 1
+          else if idx == 0 then
+            placer.trySplit(a, ctx, curY) match
+              case Some((portion, remainder)) =>
+                val ph = placer.height(portion, ctx)
+                placer.place(portion, slide, ppt, ctx, curY, tb)
+                curY += ph
+                remainder match
+                  case Some(rem) => items.update(idx, rem)
+                  case None      => idx += 1
+              case None =>
+                overflow = true; overflowTotal.incrementAndGet()
+          else
+            overflow = true; overflowTotal.incrementAndGet()
+        else
+          overflow = true
+          overflowTotal.incrementAndGet()
+
       while idx < items.length && !overflow do
         items(idx) match
-          case T(line) =>
-            val fs        = line.maxFontSize * fontScale
-            // Estimate visual lines after word-wrap in PowerPoint.
-            // Line spacing = 120% of font -> fs * 1.2 pt per visual line.
-            // Use char width factor 0.65 (conservative for Cyrillic).
-            val avgCharW  = (fs * 0.65).max(1.0)
-            val chPerLine = (availW / avgCharW).toInt.max(1)
-            // total rendered chars = sum of text lengths + estimated spaces between words
-            val approxSpaces = line.elements.length
-            val totalChars   = line.elements.map(_.text.length).sum + approxSpaces
-            val visLines     = math.ceil(totalChars.toDouble / chPerLine).toInt.max(1)
-            val lineH        = visLines * (fs * 1.2) + cfg.lineSpacing
-            val fits         = curY + lineH <= usableH
-
+          case line: TextLine =>
+            val placer = summon[SlidePlacer[TextLine]]
+            val h = placer.height(line, ctx)
+            val fits = curY + h <= ctx.usableH
             if fits then
-              // lazy-create text box at current vertical position (after any images)
               if tb == null then
                 val gap = if curY > 0 then 14.0 else 0.0
-                tb = newTextBox(slide, cfg, availW, availH - curY - gap, curY + gap)
-              // whole line fits - add as one paragraph
-              addLineAsParagraph(tb, line, cfg, posScale, fontScale)
-              curY += lineH; idx += 1
+                tb = newTextBox(slide, ctx.cfg, ctx.availW, ctx.usableH - curY - gap, curY + gap)
+              placer.place(line, slide, ppt, ctx, curY, tb)
+              curY += h; idx += 1
             else if idx == 0 then
-              // first item on the slide but too long - split across slides
               if tb == null then
                 val gap = if curY > 0 then 14.0 else 0.0
-                tb = newTextBox(slide, cfg, availW, availH - curY - gap, curY + gap)
-              val spaceLeft   = usableH - curY
-              val linesThatFit = (spaceLeft / (fs * 1.2)).toInt.max(1)
-              val charsThatFit = linesThatFit * chPerLine
-              val (fitElems, remainElems) = splitElements(line.elements, charsThatFit)
-              if fitElems.nonEmpty then
-                addLineAsParagraph(tb, TextLine(fitElems, line.y, line.maxFontSize),
-                  cfg, posScale, fontScale)
-              if remainElems.nonEmpty then
-                // replace current item with remainder for the next slide
-                items.update(idx, T(TextLine(remainElems, line.y, line.maxFontSize)))
-              else
-                idx += 1
-              // Do NOT set overflow - we handled this item. Other items can still
-              // be placed on this slide (images, shorter text after the split).
+                tb = newTextBox(slide, ctx.cfg, ctx.availW, ctx.usableH - curY - gap, curY + gap)
+              placer.trySplit(line, ctx, curY) match
+                case Some((portion, remainder)) =>
+                  val ph = summon[SlidePlacer[TextLine]].height(portion, ctx)
+                  summon[SlidePlacer[TextLine]].place(portion, slide, ppt, ctx, curY, tb)
+                  curY += ph
+                  remainder match
+                    case Some(rem) => items.update(idx, rem)
+                    case None      => idx += 1
+                case None =>
+                  overflow = true; overflowTotal.incrementAndGet()
             else
-              // doesn't fit and not first item on slide - overflow
               overflow = true; overflowTotal.incrementAndGet()
 
-          case I(img) =>
-            var iw = img.width.toDouble * posScale
-            var ih = img.height.toDouble * posScale
-            if iw > availW then
-              val s = availW / iw; iw = availW; ih = ih * s
-            if ih > maxImgH then
-              val s = maxImgH / ih; ih = maxImgH; iw = iw * s
-            val fits = curY + ih <= usableH
+          case img: PageImage =>
+            processNonText(img, summon[SlidePlacer[PageImage]], slide, ppt, ctx)
 
-            if tb == null then
-              // No text yet on this slide - place image normally
-              if fits || idx == 0 then
-                try
-                  val pt = mimeToPictureType(img.contentType)
-                  val pd = ppt.addPicture(img.data, pt)
-                  slide.createPicture(pd).setAnchor(new Rectangle2D.Double(
-                    cfg.marginX + (availW - iw) / 2, cfg.marginY + curY, iw, ih))
-                catch case e: Exception => Console.err.println(s"  \u26a0 Image: ${e.getMessage}")
-                curY += ih; idx += 1
-              if !fits then
-                overflow = true; overflowTotal.incrementAndGet()
-            else
-              // Text already on this slide - overflow image to next slide
-              // to prevent overlapping text and images
-              overflow = true
-              overflowTotal.incrementAndGet()
-
-          case Tbl(tbl) =>
-            val tw = tbl.columnWidths.sum.toDouble
-            // Scale table if wider than available space
-            val scaleW = if tw > availW then availW / tw else 1.0
-            val scaledHeights = tbl.rows.map(r => r.height.toDouble * scaleW)
-            val th = scaledHeights.sum
-            val fits = curY + th <= usableH
-
-            if tb == null then
-              if fits then
-                // Whole table fits - render all rows
-                try
-                  drawTable(slide, tbl, cfg, availW, scaleW, curY, 0, tbl.rows.length)
-                catch case e: Exception => Console.err.println(s"  ⚠ Table: ${e.getMessage}")
-                curY += th; idx += 1
-              else if idx == 0 then
-                // Table too tall - split rows across slides
-                val spaceLeft = usableH - curY
-                var accH = 0.0
-                var splitIdx = 0
-                while splitIdx < scaledHeights.length &&
-                      accH + scaledHeights(splitIdx) <= spaceLeft do
-                  accH += scaledHeights(splitIdx)
-                  splitIdx += 1
-
-                if splitIdx == 0 then
-                  // No rows fit in remaining space - overflow whole remainder
-                  // to the next slide
-                  overflow = true; overflowTotal.incrementAndGet()
-                else
-                  try
-                    drawTable(slide, tbl, cfg, availW, scaleW, curY, 0, splitIdx)
-                  catch case e: Exception => Console.err.println(s"  ⚠ Table: ${e.getMessage}")
-                  curY += accH
-
-                  if splitIdx < tbl.rows.length then
-                    // Keep remaining rows for the next slide
-                    val remaining = PageTable(tbl.y, tbl.columnWidths, tbl.rows.drop(splitIdx))
-                    items.update(idx, Tbl(remaining))
-                  else
-                    idx += 1
-                  // Do NOT set overflow - we handled this table by splitting it
-              else
-                // Table doesn't fit and not first item - overflow
-                overflow = true; overflowTotal.incrementAndGet()
-            else
-              // Text already on slide - overflow table to prevent overlap
-              overflow = true
-              overflowTotal.incrementAndGet()
+          case tbl: PageTable =>
+            processNonText(tbl, summon[SlidePlacer[PageTable]], slide, ppt, ctx)
 
       items.remove(0, idx)
 
