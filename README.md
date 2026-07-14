@@ -30,7 +30,38 @@ Produces a fat JAR at:
 target/out/jvm/scala-3.3.4/convertator/convertator-assembly-0.1.0.jar
 ```
 
-## Usage — batch mode (default)
+## Usage — via sbt (development)
+
+Run directly with `sbt` without building a JAR:
+
+```bash
+# Batch mode — processes all files in src/main/resources/source/
+sbt run
+
+# Single file
+sbt 'run "mydoc.pdf" "mydoc.pptx"'
+sbt 'run "mydoc.docx" "mydoc.pptx"'
+
+# With options
+sbt 'run "mydoc.pdf" "mydoc.pptx" --font-size 22 --mode fit'
+```
+
+> **Note:** The `run` command expects two or more arguments. Use quotes around the entire argument list after `run`.
+
+## Usage — fat JAR (deployment)
+
+### Build
+
+```bash
+sbt assembly
+```
+
+Produces a fat JAR at:
+```
+target/out/jvm/scala-3.3.4/convertator/convertator-assembly-0.1.0.jar
+```
+
+### Batch mode (default)
 
 Place your PDF or DOCX files into `src/main/resources/source/`, then run:
 
@@ -46,11 +77,10 @@ java -jar <jar> --font-size 14
 java -jar <jar> --mode fit
 ```
 
-## Usage — single file
+### Single file
 
 ```bash
 java -jar <jar> mydoc.pdf mydoc.pptx [options]
-java -jar <jar> mydoc.docx mydoc.pptx [options]
 ```
 
 ### Options
