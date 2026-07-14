@@ -1,6 +1,7 @@
 package convertator.pptx
 
 import convertator.model.{ConversionConfig, PageContent, PageImage, PageMode, PageTable, TextElement, TextLine}
+import convertator.pptx.SlidePlacers.*
 
 import org.apache.poi.xslf.usermodel.*
 import org.apache.poi.sl.usermodel.{PictureData, TextParagraph as SLTextParagraph}

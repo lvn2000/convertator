@@ -134,10 +134,8 @@ object SlidePlacers:
         val s = ctx.maxImgH / ih; ih = ctx.maxImgH; iw = iw * s
       try
         val pt = mimeToPictureType(img.contentType)
-        val pd = org.apache.poi.xslf.usermodel.XMLSlideShow.SYSTEM_PICTURE_FACTORY.addPicture(img.data, pt)
-        // Use ppt.addPicture instead of custom factory where possible
-        val pd2 = ppt.addPicture(img.data, pt)
-        slide.createPicture(pd2).setAnchor(new Rectangle2D.Double(
+        val pd = ppt.addPicture(img.data, pt)
+        slide.createPicture(pd).setAnchor(new Rectangle2D.Double(
           ctx.cfg.marginX + (ctx.availW - iw) / 2, ctx.cfg.marginY + curY, iw, ih))
       catch case e: Exception => Console.err.println(s"  \u26a0 Image: ${e.getMessage}")
       tb
