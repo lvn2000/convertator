@@ -19,11 +19,6 @@ project/metals.sbt
 .DS_Store
 Thumbs.db
 
-# Output PPTX (generated)
-src/main/resources/output/*.pptx
-
-# Test PDF (generated or copied)
-src/main/resources/source/input.pdf
-
-# Test content
-src/main/resources/source/test-content.html
+# Resource directories (input/output files)
+src/main/resources/source/
+src/main/resources/output/
