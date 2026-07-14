@@ -2,6 +2,7 @@ package convertator.pptx
 
 import convertator.model.{ConversionConfig, PageContent, PageImage, PageMode, PageTable, TextElement, TextLine}
 import convertator.pptx.SlidePlacers.*
+import convertator.pptx.SlidePlacers.given
 
 import org.apache.poi.xslf.usermodel.*
 import org.apache.poi.sl.usermodel.{PictureData, TextParagraph as SLTextParagraph}
@@ -111,7 +112,7 @@ object SlideBuilder:
                 val gap = if curY > 0 then 14.0 else 0.0
                 tb = newTextBox(slide, ctx.cfg, ctx.availW, ctx.usableH - curY - gap, curY + gap)
               placer.trySplit(line, ctx, curY) match
-                case Some((portion, remainder)) =>
+                case Some((portion: TextLine, remainder: Option[TextLine])) =>
                   val ph = summon[SlidePlacer[TextLine]].height(portion, ctx)
                   summon[SlidePlacer[TextLine]].place(portion, slide, ppt, ctx, curY, tb)
                   curY += ph
@@ -133,7 +134,7 @@ object SlideBuilder:
                 curY += h; idx += 1
               else if idx == 0 then
                 placer.trySplit(img, ctx, curY) match
-                  case Some((portion, remainder)) =>
+                  case Some((portion: PageImage, remainder: Option[PageImage])) =>
                     val ph = placer.height(portion, ctx)
                     placer.place(portion, slide, ppt, ctx, curY, tb)
                     curY += ph
@@ -157,7 +158,7 @@ object SlideBuilder:
                 curY += h; idx += 1
               else if idx == 0 then
                 placer.trySplit(tbl, ctx, curY) match
-                  case Some((portion, remainder)) =>
+                  case Some((portion: PageTable, remainder: Option[PageTable])) =>
                     val ph = placer.height(portion, ctx)
                     placer.place(portion, slide, ppt, ctx, curY, tb)
                     curY += ph
