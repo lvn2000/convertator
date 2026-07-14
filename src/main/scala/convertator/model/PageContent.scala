@@ -5,5 +5,6 @@ case class PageContent(
   lines: List[TextLine],
   pageWidth: Float,
   pageHeight: Float,
-  images: List[PageImage] = Nil
+  images: List[PageImage] = Nil,
+  tables: List[PageTable] = Nil
 )
