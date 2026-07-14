@@ -38,5 +38,10 @@ case class ConversionConfig(
    */
   targetFontSize: Option[Float] = Some(18f),
   /** How to map PDF pages into slides (default Flow = natural font sizes). */
-  pageMode: PageMode = PageMode.Flow
+  pageMode: PageMode = PageMode.Flow,
+  /** When true, each TextLine is placed into its own small textbox which
+    * avoids text overlapping tables or images. When false (default), a single
+    * lazily-created textbox is used per slide (original behavior).
+    */
+  usePerLineTextBoxes: Boolean = false
 )

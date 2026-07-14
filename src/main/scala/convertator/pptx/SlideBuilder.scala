@@ -90,7 +90,7 @@ object SlideBuilder:
 
     while buf.nonEmpty do
       val slide = newSlide(ppt)
-      var tb: XSLFTextBox = null  // created lazily when first text item is reached
+      var tb: XSLFTextBox = null  // used only when grouping text into a single box
       var curY  = 0.0
       var idx   = 0
       var overflow = false
@@ -101,84 +101,116 @@ object SlideBuilder:
             val placer = summon[SlidePlacer[TextLine]]
             val h = placer.height(line, ctx)
             val fits = curY + h <= ctx.usableH
-            if fits then
-              if tb == null then
+
+            if ctx.cfg.usePerLineTextBoxes then
+              // Per-line textbox strategy
+              if fits then
                 val gap = if curY > 0 then 14.0 else 0.0
-                tb = newTextBox(slide, ctx.cfg, ctx.availW, ctx.usableH - curY - gap, curY + gap)
-              placer.place(line, slide, ppt, ctx, curY, tb)
-              curY += h; idx += 1
-            else if idx == 0 then
-              if tb == null then
-                val gap = if curY > 0 then 14.0 else 0.0
-                tb = newTextBox(slide, ctx.cfg, ctx.availW, ctx.usableH - curY - gap, curY + gap)
-              val splitRes: Option[(TextLine, Option[TextLine])] = placer.trySplit(line, ctx, curY)
-              splitRes match
-                case Some(t) =>
-                  val (portion, remainder) = t
-                  val ph = summon[SlidePlacer[TextLine]].height(portion, ctx)
-                  summon[SlidePlacer[TextLine]].place(portion, slide, ppt, ctx, curY, tb)
-                  curY += ph
-                  remainder match
-                    case Some(rem) => buf.update(idx, convertator.model.PageItem.TextLineItem(rem))
-                    case None      => idx += 1
-                case None =>
-                  overflow = true
-                  overflowTotal.incrementAndGet()
+                val singleTb = newTextBox(slide, ctx.cfg, ctx.availW, h, curY + gap)
+                addLineAsParagraph(singleTb, line, ctx.cfg, ctx.posScale, ctx.fontScale)
+                curY += h; idx += 1
+              else if idx == 0 then
+                val splitRes: Option[(TextLine, Option[TextLine])] = placer.trySplit(line, ctx, curY)
+                splitRes match
+                  case Some(t) =>
+                    val (portion, remainder) = t
+                    val ph = summon[SlidePlacer[TextLine]].height(portion, ctx)
+                    val singleTb = newTextBox(slide, ctx.cfg, ctx.availW, ph, curY)
+                    addLineAsParagraph(singleTb, portion, ctx.cfg, ctx.posScale, ctx.fontScale)
+                    curY += ph
+                    remainder match
+                      case Some(rem) => buf.update(idx, convertator.model.PageItem.TextLineItem(rem))
+                      case None      => idx += 1
+                  case None =>
+                    // Content too large even as first item; mark overflow (counts extra slide)
+                    overflow = true
+                    overflowTotal.incrementAndGet()
+              else
+                // Item doesn't fit on this slide; end slide and continue on next without counting
+                overflow = true
+
             else
-              overflow = true
-              overflowTotal.incrementAndGet()
+              // Grouped textbox strategy (original behavior): use a lazily
+              // created textbox `tb` that accumulates paragraphs.
+              if fits then
+                if tb == null then
+                  val gap = if curY > 0 then 14.0 else 0.0
+                  tb = newTextBox(slide, ctx.cfg, ctx.availW, ctx.usableH - curY - gap, curY + gap)
+                placer.place(line, slide, ppt, ctx, curY, tb)
+                curY += h; idx += 1
+              else if idx == 0 then
+                val splitRes: Option[(TextLine, Option[TextLine])] = placer.trySplit(line, ctx, curY)
+                splitRes match
+                  case Some(t) =>
+                    val (portion, remainder) = t
+                    val ph = summon[SlidePlacer[TextLine]].height(portion, ctx)
+                    if tb == null then
+                      val gap = if curY > 0 then 14.0 else 0.0
+                      tb = newTextBox(slide, ctx.cfg, ctx.availW, ctx.usableH - curY - gap, curY + gap)
+                    summon[SlidePlacer[TextLine]].place(portion, slide, ppt, ctx, curY, tb)
+                    curY += ph
+                    remainder match
+                      case Some(rem) => buf.update(idx, convertator.model.PageItem.TextLineItem(rem))
+                      case None      => idx += 1
+                  case None =>
+                    // Content too large even as first item; mark overflow (counts extra slide)
+                    overflow = true
+                    overflowTotal.incrementAndGet()
+              else
+                // Item doesn't fit on this slide; end slide and continue on next without counting
+                overflow = true
 
           case convertator.model.PageItem.ImageItem(img) =>
             val placer = summon[SlidePlacer[PageImage]]
             val h = placer.height(img, ctx)
             val fits = curY + h <= ctx.usableH
-            if tb == null then
-              if fits then
-                placer.place(img, slide, ppt, ctx, curY, tb)
-                curY += h; idx += 1
-              else if idx == 0 then
-                  val splitImg: Option[(PageImage, Option[PageImage])] = placer.trySplit(img, ctx, curY)
-                  splitImg match
-                    case Some(t) =>
-                      val (portion, remainder) = t
-                      val ph = placer.height(portion, ctx)
-                      placer.place(portion, slide, ppt, ctx, curY, tb)
-                      curY += ph
-                      remainder match
-                        case Some(rem) => buf.update(idx, convertator.model.PageItem.ImageItem(rem))
-                        case None      => idx += 1
-                    case None =>
-                      overflow = true; overflowTotal.incrementAndGet()
-              else
-                overflow = true; overflowTotal.incrementAndGet()
+            if fits then
+              placer.place(img, slide, ppt, ctx, curY, null)
+              curY += h; idx += 1
+            else if idx == 0 then
+              val splitImg: Option[(PageImage, Option[PageImage])] = placer.trySplit(img, ctx, curY)
+              splitImg match
+                case Some(t) =>
+                  val (portion, remainder) = t
+                  val ph = placer.height(portion, ctx)
+                  placer.place(portion, slide, ppt, ctx, curY, null)
+                  curY += ph
+                  remainder match
+                    case Some(rem) => buf.update(idx, convertator.model.PageItem.ImageItem(rem))
+                    case None      => idx += 1
+                case None =>
+                  // Image too large even as first item; mark overflow (counts extra slide)
+                  overflow = true
+                  overflowTotal.incrementAndGet()
             else
-              overflow = true; overflowTotal.incrementAndGet()
+              // Image doesn't fit on this slide; end slide and continue on next without counting
+              overflow = true
 
           case convertator.model.PageItem.TableItem(tbl) =>
             val placer = summon[SlidePlacer[PageTable]]
             val h = placer.height(tbl, ctx)
             val fits = curY + h <= ctx.usableH
-            if tb == null then
-              if fits then
-                placer.place(tbl, slide, ppt, ctx, curY, tb)
-                curY += h; idx += 1
-              else if idx == 0 then
-                  val splitTbl: Option[(PageTable, Option[PageTable])] = placer.trySplit(tbl, ctx, curY)
-                  splitTbl match
-                    case Some(t) =>
-                      val (portion, remainder) = t
-                      val ph = placer.height(portion, ctx)
-                      placer.place(portion, slide, ppt, ctx, curY, tb)
-                      curY += ph
-                      remainder match
-                        case Some(rem) => buf.update(idx, convertator.model.PageItem.TableItem(rem))
-                        case None      => idx += 1
-                    case None =>
-                      overflow = true; overflowTotal.incrementAndGet()
-              else
-                overflow = true; overflowTotal.incrementAndGet()
+            if fits then
+              placer.place(tbl, slide, ppt, ctx, curY, null)
+              curY += h; idx += 1
+            else if idx == 0 then
+              val splitTbl: Option[(PageTable, Option[PageTable])] = placer.trySplit(tbl, ctx, curY)
+              splitTbl match
+                case Some(t) =>
+                  val (portion, remainder) = t
+                  val ph = placer.height(portion, ctx)
+                  placer.place(portion, slide, ppt, ctx, curY, null)
+                  curY += ph
+                  remainder match
+                    case Some(rem) => buf.update(idx, convertator.model.PageItem.TableItem(rem))
+                    case None      => idx += 1
+                case None =>
+                  // Table too large even as first item; mark overflow (counts extra slide)
+                  overflow = true
+                  overflowTotal.incrementAndGet()
             else
-              overflow = true; overflowTotal.incrementAndGet()
+              // Table doesn't fit on this slide; end slide and continue on next without counting
+              overflow = true
 
       buf.remove(0, idx)
 

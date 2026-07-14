@@ -6,11 +6,12 @@ Uses Apache PDFBox and Apache POI for reading; Apache POI (XSLF) for PPTX genera
 
 ## How it works
 
-1. **Read** the source file — PDFBox extracts text with positioning (PDF) or POI reads paragraphs, runs, tables, and images (DOCX).
+1. **Read** the source file — `DocumentReader.read()` delegates to `PdfReader` (PDFBox) or `WordReader` (POI) to extract text with positioning, images, and tables.
 2. **Group & assemble** — adjacent text fragments are merged into words by positional gaps; table cells are extracted with their row/column structure.
-3. **Render** onto PPTX slides — text goes into word-wrapped text boxes; images are placed as picture shapes; tables are rendered as XSLFTable objects with borders, row heights, and white cell fills.
-4. **Overflow handling** — content that doesn't fit the current slide is automatically split across continuation slides. Long text wraps by character count; wide tables split by rows.
-5. **Default language** is set to Ukrainian (`uk-UA`) for correct proofing tools.
+3. **Unified model** — all content (text/images/tables) is wrapped in the `PageItem` ADT for uniform handling.
+4. **Render** onto PPTX slides — `SlideBuilder` uses `SlidePlacer` type class instances to measure, place, and split content. Text can use a single grouped textbox (default) or per-line textboxes (--per-line-textbox) to prevent overlap with tables/images.
+5. **Overflow handling** — content that doesn't fit the current slide naturally continues on the next slide. When a single item is too large even as the first item on a slide, it attempts trySplit; if unsplittable, it overflows and is counted in the final message.
+6. **Default language** is set to Ukrainian (`uk-UA`) for correct proofing tools.
 
 ## Supported formats
 
@@ -96,6 +97,7 @@ java -jar <jar> mydoc.pdf mydoc.pptx [options]
 | `--margin-x`     | Horizontal margin (points)                      | 48      |
 | `--margin-y`     | Vertical margin (points)                        | 48      |
 | `--line-spacing` | Gap between lines (points)                      | 4       |
+| `--per-line-textbox` | Place each text line in its own textbox (prevents text/table overlap)  | false |
 
 ### Modes
 
@@ -134,33 +136,45 @@ src/main/
 │   └── output/         ← Converted PPTX files appear here
 └── scala/convertator/
     ├── Main.scala                  # CLI entry point
-    ├── Converter.scala             # Orchestrator
+    ├── Converter.scala             # Public API orchestrator (delegates to CoreConverter)
+    ├── CoreConverter.scala         # Core conversion logic; returns Either[Throwable, Unit]
     ├── model/
     │   ├── ConversionConfig.scala  # Tuning parameters & PageMode enum
     │   ├── PageContent.scala       # Extracted page/section content
+    │   ├── PageItem.scala          # ADT: TextLineItem | ImageItem | TableItem (replaces union types)
     │   ├── TextElement.scala       # Positioned text fragment (font, style, coords)
     │   ├── TextLine.scala          # One line of text elements
     │   ├── PageImage.scala         # Extracted image with position & dimensions
     │   ├── TableContent.scala      # Table / row / cell model
     │   └── Positioned.scala        # `Positioned` type class trait
+    ├── readers/
+    │   └── DocumentReader.scala    # Trait for document readers (PDF/DOCX abstraction)
     ├── pdf/
-    │   └── PdfReader.scala         # PDF extraction via PDFBox
+    │   └── PdfReader.scala         # PDF extraction via PDFBox (extends DocumentReader)
     ├── docx/
-    │   └── WordReader.scala        # DOCX extraction via POI (text, images, tables)
+    │   └── WordReader.scala        # DOCX extraction via POI (extends DocumentReader)
     └── pptx/
-        ├── SlideBuilder.scala      # PPTX generation via POI (rendering)
-        └── SlidePlacer.scala       # `SlidePlacer` type class + `PlaceContext`
+        ├── SlideBuilder.scala      # PPTX generation via POI (rendering orchestrator)
+        ├── SlidePlacer.scala       # `SlidePlacer` type class (moved from SlideBuilder)
+        └── SlidePlacers.scala      # Given instances for SlidePlacer[TextLine | PageImage | PageTable]
 ```
 
-## Architecture — type classes
+## Architecture — type classes & ADT
 
-The rendering logic is structured around two type classes for extensibility:
+### `PageItem` ADT (`model/PageItem.scala`)
+
+Unified algebraic data type:
+- `TextLineItem(line: TextLine)`
+- `ImageItem(img: PageImage)`
+- `TableItem(tbl: PageTable)`
+
+Replaces union types (`TextLine | PageImage | PageTable`), enabling stronger compile-time type safety and easier pattern matching.
 
 ### `Positioned[A]` (`model/Positioned.scala`)
 
-Provides sorting position (`y`) and display priority (`imgOrder`) for any content type. Instances exist for `TextLine`, `PageImage`, and `PageTable`.
+Provides sorting position (`y`) and display priority (`imgOrder`) for any content type. Instances exist for `TextLine`, `PageImage`, `PageTable`, and `PageItem` (delegates to underlying type).
 
-### `SlidePlacer[A]` (`pptx/SlidePlacer.scala`)
+### `SlidePlacer[A]` (`pptx/SlidePlacer.scala` + `pptx/SlidePlacers.scala`)
 
 Encapsulates three operations per content type:
 
@@ -170,13 +184,29 @@ Encapsulates three operations per content type:
 | `place`      | Render the item onto the slide at a given y-offset        |
 | `trySplit`   | Split overflowing content; returns `None` if unsplittable |
 
+Given instances for `TextLine`, `PageImage`, and `PageTable` are defined in `SlidePlacers.scala`.
+
 Adding a new content type (e.g. `PageChart`) requires:
 1. A model case class
 2. A `Positioned` given instance
 3. A `SlidePlacer` given instance with the three methods
-4. A `case` branch in the `buildSlides` inner loop match
+4. A `PageItem` case (e.g., `ChartItem`)
+5. A case branch in `buildSlides` match
 
-No sealed traits or wrapper case classes need modification.
+### `DocumentReader` (`readers/DocumentReader.scala`)
+
+Abstraction trait for document extraction (PDF/DOCX):
+```scala
+trait DocumentReader:
+  def read(input: File): Seq[PageContent]
+  def read(input: InputStream): Seq[PageContent]
+```
+
+Implemented by `PdfReader` and `WordReader`, allowing pluggable readers for future formats.
+
+### `CoreConverter` (`CoreConverter.scala`)
+
+Pure function returning `Either[Throwable, Unit]` for core conversion logic. Separates I/O concerns (Converter.run) from pure business logic, enabling unit testing without side effects.
 
 ## Workflow
 
