@@ -1,13 +1,23 @@
-# Convertator — PDF → PPTX Converter
+# Convertator — PDF / DOCX → PPTX Converter
 
-A Scala 3 application that converts PDF files into Microsoft PowerPoint (PPTX) presentations, preserving text content, font sizes, and basic styling (bold/italic). Uses Apache PDFBox for PDF reading and Apache POI for PPTX generation.
+A Scala 3 application that converts PDF and DOCX files into Microsoft PowerPoint (PPTX) presentations, preserving text content, font sizes, styling (bold/italic/underline), embedded images, and tables.
+
+Uses Apache PDFBox and Apache POI for reading; Apache POI (XSLF) for PPTX generation.
 
 ## How it works
 
-1. **Read** the PDF using Apache PDFBox — extracts every text fragment with its position, font name, font size, and style.
-2. **Group** adjacent characters into words, detecting word boundaries by positional gaps (PDFs often position words without space characters).
-3. **Render** onto PPTX slides using Apache POI — one text box per slide, one paragraph per PDF line, with word-level text runs. Text overflow is detected and content automatically flows to the next slide.
-4. **Default language** is set to Ukrainian (`uk-UA`) for correct proofing tools.
+1. **Read** the source file — PDFBox extracts text with positioning (PDF) or POI reads paragraphs, runs, tables, and images (DOCX).
+2. **Group & assemble** — adjacent text fragments are merged into words by positional gaps; table cells are extracted with their row/column structure.
+3. **Render** onto PPTX slides — text goes into word-wrapped text boxes; images are placed as picture shapes; tables are rendered as XSLFTable objects with borders, row heights, and white cell fills.
+4. **Overflow handling** — content that doesn't fit the current slide is automatically split across continuation slides. Long text wraps by character count; wide tables split by rows.
+5. **Default language** is set to Ukrainian (`uk-UA`) for correct proofing tools.
+
+## Supported formats
+
+| Input  | Output | Reader            |
+|--------|--------|-------------------|
+| `.pdf` | `.pptx`| `PdfReader`       |
+| `.docx`| `.pptx`| `WordReader`      |
 
 ## Build
 
@@ -22,7 +32,7 @@ target/out/jvm/scala-3.3.4/convertator/convertator-assembly-0.1.0.jar
 
 ## Usage — batch mode (default)
 
-Place your PDF files into `src/main/resources/source/`, then run:
+Place your PDF or DOCX files into `src/main/resources/source/`, then run:
 
 ```bash
 java -jar target/out/jvm/scala-3.3.4/convertator/convertator-assembly-0.1.0.jar
@@ -30,7 +40,7 @@ java -jar target/out/jvm/scala-3.3.4/convertator/convertator-assembly-0.1.0.jar
 
 Converted PPTX files appear in `src/main/resources/output/` with the same filename (but `.pptx` extension).
 
-You can also pass options:
+Options can be passed:
 ```bash
 java -jar <jar> --font-size 14
 java -jar <jar> --mode fit
@@ -40,6 +50,7 @@ java -jar <jar> --mode fit
 
 ```bash
 java -jar <jar> mydoc.pdf mydoc.pptx [options]
+java -jar <jar> mydoc.docx mydoc.pptx [options]
 ```
 
 ### Options
@@ -68,7 +79,7 @@ Use `flow` for book-like pagination where dense content spans multiple slides.
 ### Examples
 
 ```bash
-# Batch mode (default) — processes all PDFs in src/main/resources/source/
+# Batch mode (default) — processes all PDFs/DOCX in src/main/resources/source/
 java -jar <jar>
 
 # With larger text
@@ -79,6 +90,9 @@ java -jar <jar> doc.pdf doc.pptx --slide-width 960 --slide-height 540
 
 # Fit mode — one slide per PDF page
 java -jar <jar> --mode fit
+
+# DOCX file
+java -jar <jar> report.docx report.pptx
 ```
 
 ## Project structure
@@ -86,31 +100,63 @@ java -jar <jar> --mode fit
 ```
 src/main/
 ├── resources/
-│   ├── source/         ← Put your PDF files here
+│   ├── source/         ← Put your input files here
 │   └── output/         ← Converted PPTX files appear here
 └── scala/convertator/
     ├── Main.scala                  # CLI entry point
     ├── Converter.scala             # Orchestrator
     ├── model/
     │   ├── ConversionConfig.scala  # Tuning parameters & PageMode enum
-    │   ├── PageContent.scala       # Extracted page content
-    │   ├── TextElement.scala       # Positioned text fragment
-    │   └── TextLine.scala          # Line of text fragments
+    │   ├── PageContent.scala       # Extracted page/section content
+    │   ├── TextElement.scala       # Positioned text fragment (font, style, coords)
+    │   ├── TextLine.scala          # One line of text elements
+    │   ├── PageImage.scala         # Extracted image with position & dimensions
+    │   ├── TableContent.scala      # Table / row / cell model
+    │   └── Positioned.scala        # `Positioned` type class trait
     ├── pdf/
     │   └── PdfReader.scala         # PDF extraction via PDFBox
+    ├── docx/
+    │   └── WordReader.scala        # DOCX extraction via POI (text, images, tables)
     └── pptx/
-        └── SlideBuilder.scala      # PPTX generation via POI
+        ├── SlideBuilder.scala      # PPTX generation via POI (rendering)
+        └── SlidePlacer.scala       # `SlidePlacer` type class + `PlaceContext`
 ```
+
+## Architecture — type classes
+
+The rendering logic is structured around two type classes for extensibility:
+
+### `Positioned[A]` (`model/Positioned.scala`)
+
+Provides sorting position (`y`) and display priority (`imgOrder`) for any content type. Instances exist for `TextLine`, `PageImage`, and `PageTable`.
+
+### `SlidePlacer[A]` (`pptx/SlidePlacer.scala`)
+
+Encapsulates three operations per content type:
+
+| Method       | Purpose                                                   |
+|--------------|-----------------------------------------------------------|
+| `height`     | Estimated vertical space the item occupies (points)       |
+| `place`      | Render the item onto the slide at a given y-offset        |
+| `trySplit`   | Split overflowing content; returns `None` if unsplittable |
+
+Adding a new content type (e.g. `PageChart`) requires:
+1. A model case class
+2. A `Positioned` given instance
+3. A `SlidePlacer` given instance with the three methods
+4. A `case` branch in the `buildSlides` inner loop match
+
+No sealed traits or wrapper case classes need modification.
 
 ## Workflow
 
-1. Place PDF files in `src/main/resources/source/`
+1. Place PDF or DOCX files in `src/main/resources/source/`
 2. Run `sbt assembly` (one-time build, produces fat JAR)
-3. Run `java -jar <jar>` to convert all PDFs
+3. Run `java -jar <jar>` to convert all files
 4. Open the resulting PPTX files from `src/main/resources/output/`
 
 ## Limitations
 
-- **Images** are not extracted (text-only conversion).
-- **Tables** are treated as positioned text (no cell/row structure).
-- **Font mapping** relies on PDF font names — fallback fonts in PowerPoint may differ.
+- **PDF tables** are treated as positioned text (no cell/row structure). DOCX tables are fully supported.
+- **Font mapping** relies on PDF/DOCX font names — fallback fonts in PowerPoint may differ.
+- **Nested tables** inside table cells are not extracted (only top-level DOCX tables via `getBodyElements`).
